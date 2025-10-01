@@ -1,0 +1,576 @@
+---
+title: "GEOG215 Final Project"
+author: "Samuel Metcalf"
+date: "2025-04-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Exploratory Spatial Data Analysis
+
+#### by Sam Metcalf - 4/26/25
+
+## Title
+
+***The Lingering Impacts of Redlining on Residential Segregation in Durham, North Carolina***
+
+### Topic
+
+Since the mid-twentieth century, there has been no greater contributor to personal wealth in the United States--and no personal achievement more synonymous with the American Dream--than homeownership, accounting for more than half of the wealth of U.S. households across all racial groups (Kochhar and Moslimani, 2023). Beginning in 1934, the Federal Housing Administration (a program of the New Deal) made the promise of homeownership a reality for generations of Americans. However, this promise was not afforded to everyone (Fritz, 2025). The Federal Housing Administration relied heavily on maps produced by the Home Owner's Loan Corporation--so-called "redlining" maps--to base their investment and mortgage activity. HOLC's classification of neighborhoods was heavily influenced by the presence of minority ethnic groups, and particularly African-Americans (Gross, 2017). In practice, this meant that residents predominantly African-American neighborhoods (and even racially integrated neighborhoods) were deprived of this pathway to personal wealth, contributing to the persistent financial disparity between Whites and African-Americans.
+
+This project seeks to explore the historical impact of redlining on current neighborhood racial patterns in Durham, North Carolina. Using block-level data from the 2000 and 2020 Decennial Censuses, this project will determine the extent to which redlining grade boundaries overlapped with neighborhood segregation patterns, and whether this overlap has changed over time amid shifting demographic trends in Durham. I hypothesize that redlining was a strong factor in reinforcing neighborhood segregation, even into the twenty-first century, but that the neighborhood segregation of Durham lessened to some degree between 2000 and 2020.
+
+### Data
+
+```{r import-libraries, warning=FALSE}
+library(tidyverse)
+library(tmap)
+library(tidycensus)
+library(sf)
+library(sfdep)
+library(spdep)
+options(tigris_use_cache = TRUE)
+```
+
+```{r import-census, warning=FALSE}
+durhamCounty2000 <- get_decennial(
+  geography = "block",
+  variables = c( p_total = "P003001",
+                 p_white = "P003003",
+                 p_black = "P003004",
+                 p_ntvAm = "P003005",
+                 p_asian = "P003006",
+                 p_ntvHn = "P003007",
+                 p_other = "P003008",
+                 p_twoOM = "P003009"
+  ),
+  state = "NC",
+  county = 063,
+  year = 2000,
+  output = "wide",
+  geometry = TRUE
+)
+
+durhamCounty2020 <- get_decennial(
+  geography = "block",
+  variables = c(p_total = "P3_001N",
+                p_white = "P3_003N",
+                p_black = "P3_004N",
+                p_ntvAm = "P3_005N",
+                p_asian = "P3_006N",
+                p_ntvHn = "P3_007N",
+                p_other = "P3_008N",
+                p_twoOM = "P3_009N"
+  ),
+      
+  state = "NC",
+  county = 063,
+  year = 2020,
+  output = "wide",
+  geometry = TRUE
+)
+
+```
+
+This script obtains the number of people within each designated racial group--White, Black, Native American, Asian, Native Hawaiian/Pacific Islander, plus categories for those responding as "Other" or "Two or more"--for each census block in Durham County, North Carolina, along with tract geometries.
+
+Importantly, this script does not include variables to count residents identifying as Hispanic or Latino, because those are ethnic groups that are not mutually exclusive with self-identified race. Further research into this topic should make an effort to address this shortfall, but given time constraints I was unable to properly account for this complication.
+
+```{r import-redlining-map}
+tmp_geojson <- tempfile(fileext = ".geojson")
+download.file(
+  "https://dsl.richmond.edu/panorama/redlining/static/citiesData/NCDurham1937/geojson.json",
+  tmp_geojson
+)
+
+durhamRedlining <- read_sf(tmp_geojson)
+rm(tmp_geojson)
+```
+
+To classify tracts into different redlining grades between years, this analysis used a vectorized geojson dataset containing redlining boundaries of Durham, North Carolina from the University of Richmond's Mapping Inequality project.
+
+### Methods
+
+I began by performing an inner spatial join of the redlining classifications to the datasets containing demographics of Durham census blocks from 2000 and 2020. The census datasets and the redlining dataset used different coordinate systems, so I first converted all three into the North Carolina State Plane Coordinate System (EPSG 32119).
+
+```{r converting-coord-sys}
+# NC state plane
+durhamCounty2000 <- st_transform(durhamCounty2000, 32119)
+durhamCounty2020 <- st_transform(durhamCounty2020, 32119)
+durhamRedlining <- st_transform(durhamRedlining, 32119)
+```
+
+```{r spatial-joins,warning=FALSE}
+combinedData2000 <- durhamCounty2000 |>
+  st_join(
+    durhamRedlining,
+    join = st_intersects,
+    left = FALSE,
+    largest = TRUE
+  )
+
+combinedData2020 <- durhamCounty2020 |>
+  st_join(
+    durhamRedlining,
+    join = st_intersects,
+    left = FALSE,
+    largest = TRUE
+  )
+```
+
+I then normalized the population values for each block by calculating proportion values for each racial group. These calculations were then used to calculate a diversity index using the equation
+
+![](images/lagrida_latex_editor.png)
+
+where *D* represents the diversity index and *p* represents the proportion of each constituent racial group *i*. Diversity index is highest when there are multiple racial groups of similar proportions in a block, and lowest when there is only one racial group in a block.
+
+```{r proportion-calc}
+combinedData2000 <- combinedData2000 |>
+  mutate( # proportions
+    propWhite = p_white / p_total,
+    propBlack = p_black / p_total,
+    propNtvAm = p_ntvAm / p_total,
+    propAsian = p_asian / p_total,
+    propNtvHn = p_ntvHn / p_total,
+    propOther = p_other / p_total,
+    propTwoOM = p_twoOM / p_total
+    )
+combinedData2020 <- combinedData2020 |>
+  mutate( # proportions
+    propWhite = p_white / p_total,
+    propBlack = p_black / p_total,
+    propNtvAm = p_ntvAm / p_total,
+    propAsian = p_asian / p_total,
+    propNtvHn = p_ntvHn / p_total,
+    propOther = p_other / p_total,
+    propTwoOM = p_twoOM / p_total
+    )
+```
+
+```{r diversity-index-calc}
+# create new column for diversity index calc
+
+combinedData2020 <- combinedData2020 |> 
+  mutate(diversity = 1 - 
+           ((propWhite)^2 +
+              (propBlack)^2 +
+              (propNtvAm)^2 +
+              (propAsian)^2 +
+              (propNtvHn)^2 +
+              (propOther)^2 +
+              (propTwoOM)^2))
+
+combinedData2000 <- combinedData2000 |> 
+  mutate(diversity = 1 - 
+           ((propWhite)^2 +
+              (propBlack)^2 +
+              (propNtvAm)^2 +
+              (propAsian)^2 +
+              (propNtvHn)^2 +
+              (propOther)^2 +
+              (propTwoOM)^2))
+```
+
+Finally, I created a column to classify the majority/plurality racial group within each block--for example, a block with 60% white residents would return "White, Majority".
+
+```{r majority-plurality-race-calc}
+
+# create new columns to define majority/plurality race in each block
+
+combinedData2020 <- combinedData2020 |>
+  mutate(blockType = case_when(
+    #majorities
+    propWhite > 0.5 ~ "White, Majority",
+    propBlack > 0.5 ~ "Black, Majority",
+    propNtvAm > 0.5 ~ "Native American, Majority",
+    propAsian > 0.5 ~ "Asian, Majority",
+    propNtvHn > 0.5 ~ "Native Hawaiian or PI, Majority",
+    #pluralities
+    p_white > p_black & p_white > p_ntvAm & p_white > p_asian & p_white > p_ntvHn ~ "White, Plurality",
+    p_black > p_white & p_black > p_ntvAm & p_black > p_asian & p_black > p_ntvHn ~ "Black, Plurality",
+    p_ntvAm > p_white & p_ntvAm > p_black & p_ntvAm > p_asian & p_ntvAm > p_ntvHn ~ "Native American, Plurality",
+    p_asian > p_white & p_asian > p_black & p_asian > p_ntvAm & p_asian > p_ntvHn ~ "Asian, Plurality",
+    p_ntvHn > p_white & p_ntvHn > p_black & p_ntvHn > p_ntvAm & p_ntvHn > p_asian ~ "Native Hawaiian or PI, Plurality",
+    #no pop
+    p_total == 0 ~ "Industrial / Sparsely Populated",
+    #other
+    .default = "Other, Other"
+  )) |>
+  mutate(predomRace = str_split_i(blockType, ", ", 1)) |>
+  mutate(MajOrPlu = str_split_i(blockType, ", ", 2))
+
+combinedData2000 <- combinedData2000 |>
+  mutate(blockType = case_when(
+    #majorities
+    propWhite > 0.5 ~ "White, Majority",
+    propBlack > 0.5 ~ "Black, Majority",
+    propNtvAm > 0.5 ~ "Native American, Majority",
+    propAsian > 0.5 ~ "Asian, Majority",
+    propNtvHn > 0.5 ~ "Native Hawaiian or PI, Majority",
+    #pluralities
+    p_white > p_black & p_white > p_ntvAm & p_white > p_asian & p_white > p_ntvHn ~ "White, Plurality",
+    p_black > p_white & p_black > p_ntvAm & p_black > p_asian & p_black > p_ntvHn ~ "Black, Plurality",
+    p_ntvAm > p_white & p_ntvAm > p_black & p_ntvAm > p_asian & p_ntvAm > p_ntvHn ~ "Native American, Plurality",
+    p_asian > p_white & p_asian > p_black & p_asian > p_ntvAm & p_asian > p_ntvHn ~ "Asian, Plurality",
+    p_ntvHn > p_white & p_ntvHn > p_black & p_ntvHn > p_ntvAm & p_ntvHn > p_asian ~ "Native Hawaiian or PI, Plurality",
+    #no pop
+    p_total == 0 ~ "Industrial / Sparsely Populated",
+    #other
+    .default = "Other, Other"
+  )) |>
+  mutate(predomRace = str_split_i(blockType, ", ", 1)) |>
+  mutate(MajOrPlu = str_split_i(blockType, ", ", 2))
+```
+
+Finally, I cleaned the data to update the grade classification to account for industrial/sparsely populated tracts (the original redlining dataset marked those sections with a null value in the grade column), and added a column to designate the year for each row of block data so that I could produce facet maps later using the `tm_facet()` function.
+
+```{r data-cleaning}
+# data cleaning; fixing no data in census block grade; combining
+
+combinedData2020 <- combinedData2020 |>
+  mutate(grade = ifelse(is.na(grade), "Industrial / Sparsely Populated", grade),
+         year = 2020)
+
+combinedData2000 <- combinedData2000 |>
+  mutate(grade = ifelse(is.na(grade), "Industrial / Sparsely Populated", grade),
+         year = 2000)
+
+combinedDataAll <- rbind(combinedData2020, combinedData2000)
+```
+
+### Exploratory Spatial Data Analysis
+
+For this portion of the assignment, I explored the spatial distribution of the White population at the block level throughout Durham County, North Carolina, in the year 2020. The data for this analysis comes from the 2020 Census via the Census API, utilizing a variable that counts the number of respondents that self-identify as White for each census tract throughout Durham County.
+
+#### Descriptive Statistics
+
+```{r descriptive-statistics}
+mean(durhamCounty2020$p_white)
+
+median(durhamCounty2020$p_white)
+
+sd(durhamCounty2020$p_white)
+
+ggplot(durhamCounty2020, aes(p_white)) +
+  geom_histogram()
+```
+
+The wide discrepancy in mean and median and the extremely large standard deviation relative to each of these values suggest that the white population by block in Durham County is heavily skewed. Indeed, the histogram indicates that the data is heavily right-skewed.
+
+#### Initial Statistics
+
+```{r spatial-stats-raw}
+tm_shape(durhamCounty2020)+
+  tm_polygons("p_white")
+```
+
+This map of the total white population of Durham by block suggests that there are more significant concentrations of white population in the suburban areas of the city of Durham. Because census blocks are not a uniform population size, this map closely resembles a map of total population per block. A better analysis would normalize the white population values to the total population values:
+
+```{r spatial-stats-normalized}
+durhamCounty2020 |>
+  mutate(propWhite = p_white / p_total) |>
+  tm_shape()+
+  tm_polygons("propWhite")
+```
+
+Indeed, this normalized map illuminates how the white population in Durham County is concentrated in the western suburbs of the city of Durham and the furthest eastern and northern blocks in the county.
+
+#### Spatial Statistics
+
+##### Mean Center
+
+```{r mean-center, warning=FALSE, message=FALSE}
+#defining function
+meanCenter <- function(layer, weights=NULL) {
+  #converting data into points
+  points <- st_centroid(layer)
+  
+  if (is.null(weights)) {
+    weights <- rep(c(1),times=nrow(layer))
+  }
+  
+  #calculating x & y coords
+  mc_x <- weighted.mean(st_coordinates(points$geometry)[,1], weights)
+  mc_y <- weighted.mean(st_coordinates(points$geometry)[,2], weights)
+  
+  #creating a point
+  mean_center <- st_sfc(st_point(c(mc_x, mc_y)))
+  
+  #adding a projection
+  mean_center <- st_set_crs(mean_center, st_crs(layer))
+  
+  #return object
+  mean_center
+}
+
+#calculating mean center and weighted mean center
+meanCenterDurham <- meanCenter(durhamCounty2020)
+meanCenterDurhamWeighted <- meanCenter(durhamCounty2020, durhamCounty2020$p_white)
+
+#mapping points
+map1 <- tm_shape(meanCenterDurham) + tm_dots(fill="black", size=1)
+map2 <- tm_shape(meanCenterDurhamWeighted) + tm_dots(fill="lightgreen", size=1)
+map3 <- tm_shape(durhamCounty2020) + tm_polygons("p_white")
+map3 + map1 + map2 + tm_layout(title="Mean Centers in Durham, North Carolina;\nUnweighted and Weighted to White Population")
+```
+
+##### Standard Circle
+
+```{r standard-circle, warning=FALSE, message=FALSE}
+#defining function
+stdCircle <- function(layer, weights=NULL) {
+  #converting data into points
+  points <- st_centroid(layer)
+  
+  if (is.null(weights)) {
+    weights <- rep(c(1),times=nrow(layer))
+  }
+  
+  #calculating x & y coords
+  mc_x <- weighted.mean(st_coordinates(points$geometry)[,1], weights)
+  mc_y <- weighted.mean(st_coordinates(points$geometry)[,2], weights)
+  mean_center <- meanCenter(layer, weights)
+  
+  #calculating standard distance
+  sd <- sqrt((sum(weights *
+                    (st_coordinates(points$geometry)[,1] - mc_x)^2)
+                    / sum(weights))+
+               (sum(weights *
+                    (st_coordinates(points$geometry)[,2] - mc_y)^2)
+                    / sum(weights)))
+  
+  #buffer mean center with standard distance
+  std_circle <- st_buffer(mean_center, sd)
+  
+  #return std circle
+  std_circle
+}
+
+stdCircleTotal <- stdCircle(durhamCounty2020, durhamCounty2020$p_total)
+stdCircleWhite <- stdCircle(durhamCounty2020, durhamCounty2020$p_white)
+
+map1 <- tm_shape(stdCircleTotal) + tm_polygons("black", alpha=.6)
+map2 <- tm_shape(stdCircleWhite) + tm_polygons("white", alpha=.6)
+map3 <- tm_shape(durhamCounty2020) + tm_polygons("p_white")
+map3 + map1 + map2 + tm_layout(title="Mean Centers in Durham, North Carolina;\nUnweighted and Weighted to White Population")
+
+```
+
+Because the standard circle is slightly larger for the white population than the population at-large, it can be determined that the white population is slightly more spatially dispersed than the average across racial groups.
+
+#### Hot-Spot Analysis
+
+```{r morans-I-statistic}
+#creating neighborhoods and weights
+nbhds <- st_contiguity(durhamCounty2020, queen=TRUE)
+wts <- st_weights(nbhds, style="W")
+
+#calculating moran's I
+moran <- global_moran(durhamCounty2020$p_white, nbhds, wts)
+moran
+```
+
+This result for the Moran's I calculation demonstrates that the data is slightly clustered, although it would likely exhibit a higher clustering value if the data was normalized to total population.
+
+```{r getis-gi-calculation}
+nb_durham <- poly2nb(durhamCounty2020, queen = TRUE)
+durham_binary <- nb2listw(nb_durham, style="B")
+
+globalG.test(durhamCounty2020$p_white, durham_binary)
+
+durham_nbs <- durhamCounty2020 |>
+  mutate(
+    nb = st_contiguity(geometry),
+    wt = st_weights(nb),
+    lag = st_lag(p_white, nb, wt)
+  )
+
+durham_hot_spots <- durham_nbs |>
+  mutate(
+    Gi = local_g_perm(p_white, nb, wt, nsim=999)
+  ) |>
+  unnest(Gi)
+```
+
+```{r mapping-getis-g}
+durham_hot_spots |> 
+  # with the columns 'gi' and 'p_folded_sim"
+  # 'p_folded_sim' is the p-value of a folded permutation test
+  select(gi, p_folded_sim) |> 
+  mutate(
+    # Add a new column called "classification"
+    classification = case_when(
+      # Classify based on the following criteria:
+      gi > 0 & p_folded_sim <= 0.01 ~ "Very hot",
+      gi > 0 & p_folded_sim <= 0.05 ~ "Hot",
+      gi > 0 & p_folded_sim <= 0.1 ~ "Somewhat hot",
+      gi < 0 & p_folded_sim <= 0.01 ~ "Very cold",
+      gi < 0 & p_folded_sim <= 0.05 ~ "Cold",
+      gi < 0 & p_folded_sim <= 0.1 ~ "Somewhat cold",
+      TRUE ~ "Insignificant"
+    ),
+    # Convert 'classification' into a factor for easier plotting
+    classification = factor(
+      classification,
+      levels = c("Very hot", "Hot", "Somewhat hot",
+                 "Insignificant",
+                 "Somewhat cold", "Cold", "Very cold")
+    )
+  ) |>
+  ggplot(aes(fill = classification)) +
+  geom_sf(color = "black", lwd = 0.1) +
+  scale_fill_brewer(type = "div", palette = 5) +
+  theme_void() +
+  labs(
+    fill = "Hot Spot Classification",
+    title = "White Population Hot Spot Block Classifications in Durham, NC, 2020"
+  )
+```
+
+### Results
+
+#### Plots
+
+```{r predominant-race-plots}
+
+combinedData2000 |>
+  filter(blockType != "Industrial / Sparsely Populated") |>
+  ggplot(aes(grade, diversity)) +
+    geom_jitter(width = 0.3, aes(color = predomRace, shape=MajOrPlu)) +
+    scale_shape_manual(name = "Type", values = c(15, 16, 0)) +
+    scale_color_manual(name = "Predominant Race", values = c("blue", "black", "orange", "red")) +
+    ggtitle("Diversity Index and Predominant Race of 2000 Census Blocks in Durham, North Carolina, by Redlining Grade") +
+    xlab("Redlining Grade") + ylab("Diversity Index")
+
+combinedData2020 |>
+  filter(blockType != "Industrial / Sparsely Populated") |>
+  ggplot(aes(grade, diversity)) +
+    geom_jitter(width = 0.3, aes(color = predomRace, shape=MajOrPlu)) +
+    scale_shape_manual(name = "Type", values = c(15, 16, 0)) +
+    scale_color_manual(name = "Predominant Race", values = c("blue", "black", "green", "orange", "red")) +
+    ggtitle("Diversity Index and Predominant Race of 2020 Census Blocks in Durham, North Carolina, by Redlining Grade") +
+    xlab("Redlining Grade") + ylab("Diversity Index")
+```
+
+These plots demonstrate that the diversity index in Durham increased significantly between 2000 and 2020, and particularly in C and D-graded blocks These plots also illustrate how strong of a predictor redlining grade was of predominant race in each block in 2000, and how this phenomenon has begun to erode (although not entirely) by 2020. Finally, it is worth noting the degree to which C-graded blocks in 2000, which were about evenly split between predominantly black and predominantly white, had become much whiter by 2020, while A and B-graded tracts remained heavily white between 2000 and 2020 and D-graded tracts remained heavily black.
+
+#### Maps
+
+```{r comparison-maps, message=FALSE}
+tm_shape(combinedDataAll) + #grade
+  tm_polygons("grade",
+              fill.legend = tm_legend("1937 Redlining Grade"),
+              fill.scale = tm_scale(
+                values = c("green", "blue", "yellow", "red", "white"))
+              ) +
+  tm_facets_wrap("year", nrow = 2)
+
+tm_shape(combinedDataAll) + #diversity
+  tm_polygons("diversity",
+              fill.legend = tm_legend("Diversity Index"),
+              fill.scale = tm_scale_intervals()
+  ) +
+  tm_facets_wrap("year", nrow = 2)
+
+tm_shape(combinedDataAll) + #predom race
+  tm_polygons("blockType",
+              fill.legend = tm_legend("Block Type"),
+              fill.scale = tm_scale(
+                values = c("blue", "lightblue", "black", "gray", "white", "orange", "green", "red", "pink"))
+  ) +
+  tm_facets_wrap("year", nrow = 2)
+```
+
+This series of maps illustrates further how redlining is related to blockwise trends in diversity and racial makeup. The first facet map demonstrates how the classification scheme is applied across 2000 and 2020 census blocks. The second facet map shows how diversity index has changed over time in different blocks across the city. Finally, the third map is colored according to the predominant racial group within each block for 2000 and 2020, and shaded according to whether the predominant racial group represents a majority or plurality within the block.
+
+#### Statistical tests
+
+```{r mean-diversity-by-year}
+combinedDataAll |>
+  as.data.frame() |>
+  drop_na(diversity) |>
+  group_by(year) |>
+  summarize(
+    `Number of Tracts` = n(),
+    `Total Population` = sum(p_total),
+    `Mean Diversity` = mean(diversity)
+    )
+```
+
+While the population in the study area of central Durham shrunk by nearly 10,000 residents between 2000 and 2020, the the mean block diversity index increased by nearly 0.17.
+
+```{r mean-diversity-by-grade}
+combinedDataAll |>
+  as.data.frame() |>
+  drop_na(diversity) |>
+  group_by(grade) |>
+  summarize(
+    `Mean Diversity Index, 2000` = mean(diversity[year == 2000]),
+    `Mean Diversity Index, 2020` = mean(diversity[year == 2020]),
+    `% Change in Diversity Index, 2000-2020` = (mean(diversity[year == 2020])
+                                               -mean(diversity[year == 2000]))
+                                               /mean(diversity[year == 2000])
+                                               *100
+    )
+```
+
+However, this increase in diversity was not even across blocks of differing redlining grades. Blocks graded "D" saw a 119% increase in diversity index between 2000 and 2020, while blocks graded "B" saw only a 28% increase in diversity index.
+
+```{r race-pop-chg-by-grade}
+#total pop change
+combinedDataAll |>
+  as.data.frame() |>
+  drop_na(diversity) |>
+  group_by(grade) |>
+  summarize(
+    `Total Population, 2000` = sum(p_total[year == 2000]),
+    `Total Population, 2020` = sum(p_total[year == 2020]),
+    `% change in Total Population, 2000-2020` = (sum(p_total[year == 2020])-
+                                                sum(p_total[year == 2000]))/
+                                                sum(p_total[year == 2000])*100
+  )
+#white pop change
+combinedDataAll |>
+  as.data.frame() |>
+  drop_na(diversity) |>
+  group_by(grade) |>
+  summarize(
+    `Total White Population, 2000` = sum(p_white[year == 2000]),
+    `Total White Population, 2020` = sum(p_white[year == 2020]),
+    `% change in White Population, 2000-2020` = (sum(p_white[year == 2020])-
+                                                sum(p_white[year == 2000]))/
+                                                sum(p_white[year == 2000])*100
+  )
+#nonwhite pop change
+combinedDataAll |>
+  as.data.frame() |>
+  mutate(p_nonWt = p_total - p_white) |>
+  drop_na(diversity) |>
+  group_by(grade) |>
+  summarize(
+    `Total Nonwhite Population, 2000` = sum(p_nonWt[year == 2000]),
+    `Total Nonwhite Population, 2020` = sum(p_nonWt[year == 2020]),
+    `% change in Nonwhite Population, 2000-2020` = (sum(p_nonWt[year == 2020])-
+                                                sum(p_nonWt[year == 2000]))/
+                                                sum(p_nonWt[year == 2000])*100
+  )
+```
+
+Finally, this code block analyzes the differences in total, white, and nonwhite block populations from 2000 to 2020 grouped by redlining grade, as well as a percent change for each of those grades. Blocks graded "D" saw the steepest decline in total population, losing 42% of their residents and 44% of their nonwhite population. "C" graded blocks were interesting--these blocks saw the smallest decline in total population between 2000 and 2020, losing 27% of their nonwhite population but seeing a 20% increase in white population. Blocks defined as "Industrial" or "Sparsely Populated" saw their populations almost double; looking back to the redlining classification map, these blocks tended to be concentrated near the center of the city in what were formerly industrial areas that have gradually become residential in nature.
+
+### Discussion
+
+These results demonstrate the dramatic demographic shifts that occurred in Durham from 2000 and 2020--and, crucially, the fact that these changes did not occur evenly across redlining grades. While the city has become significantly less racially segregated, there are still lingering questions regarding whether these improvements in neighborhood diversity are of a benevolent nature, such as greater tolerance among prospective homeowners, or are instead a function of rising housing costs and gentrification pressures that have displaced nonwhite residents. This research seems to indicate that the truth is somewhere in between--while the city has experienced population decline and increasing diversity everywhere, particular blocks--such as "C" graded blocks--appear to have undergone both an exodus of nonwhites and an influx of whites.
+
+Further research could use data from additional time periods to obtain a greater understanding of the temporal aspect of demographic shifts in central Durham. Additionally, this methodology could be applied to other metropolitan areas to see if these findings are generalizable to the entire country.
+
+### Citations
+
+Fritz, M.J. (2025, March 7). Federal Housing Administration (FHA). Encyclopedia Britannica. <https://www.britannica.com/topic/Federal-Housing-Administration>
+
+Gross, T. (2017, May 3). A "Forgotten History" Of How The U.S. Government Segregated America. *NPR*. <https://www.npr.org/2017/05/03/526655831/a-forgotten-history-of-how-the-u-s-government-segregated-america>
+
+Kochhar, Rakesh, and Mohamad Moslimani. (2023, December 4). 4. The assets households own and the debts they carry. In *Wealth Surged in the Pandemic, but Debt Endures for Poorer Black and Hispanic Families*. Pew Research Center. <https://www.pewresearch.org/2023/12/04/the-assets-households-own-and-the-debts-they-carry/>

@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+    <!--
+    Apex, NC Greenway Visualization
+    by Sam Metcalf
+
+    This tool uses the JavaScript library Leaflet, and two associated plugins, to illustrate
+    the growth of Apex's greenway network over the past two decades and how it relates to
+    other pedestrian amenities within the town.
+    -->
+
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Greenway Visualization Tool</title>
+    
+    <!-- leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.8.0/dist/leaflet.css"
+    integrity="sha512-hoalWLoI8r4UszCkZ5kL8vayOGVae1oxXe/2A4AO6J9+580uKHDO3JdHb7NzwwzK5xr/Fs0W40kiNHxM9vyTtQ=="
+    crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.8.0/dist/leaflet.js"
+    integrity="sha512-BB3hKbKWOc9Ez/TAwyWxNXeoV9c1v6FIeYiBieIWkpLjauysF18NzgR1MBNBXf8/KABdlkX68nAhlwcDFLGPCQ=="
+    crossorigin=""></script>
+
+    <!-- esri -->
+    <script src="https://unpkg.com/esri-leaflet@3.0.16/dist/esri-leaflet.js"></script>
+    <script src="https://unpkg.com/esri-leaflet-vector@4.2.8/dist/esri-leaflet-vector.js"></script>
+
+    <!-- geocoder -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
+    <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+
+</head>
+<style>
+
+    #map {
+        width: auto;
+        height: 400px;
+        background-color: lightgray;
+    }
+
+</style>
+<body>
+
+    <h2>Greenway Visualization Demo</h2>
+    <h3>Sam Metcalf - 5/23/25</h3>
+
+    <h3 id = daYear>Year</h3>
+    <input id = "yearSlider" type="range" name="year" min="2000" max="2025" oninput="moveSlider(this.value)" value="2025">
+
+    <div id="map"></div>
+
+    <strong>Data Sources:</strong><br>
+    <a href="https://apexnc.maps.arcgis.com/home/item.html?id=6fc1cdb4c4384a22bdf362b5f615cb85">Apex Greenways & Pedestrian Paths</a><br>
+    <a href="https://apexnc.maps.arcgis.com/home/item.html?id=d5a70fcac31048e4aa6c4a368474e553">Apex Parks</a><br>
+    <a href="https://apexnc.maps.arcgis.com/home/item.html?id=062c529c9e1e468f82ff974b88f596dd">Apex Future Planning Area</a><br>
+
+</body>
+<script>
+
+    // initialize date for slider
+    let myCurrentSelectionYear = 2025;
+
+    // assigning colors to each feature type
+    const typeColors = { 
+        greenway: "#42C966",
+        sidepath: "#BF40BF",
+        trail: "brown",
+        ssgreenway: "#00B2B2",
+        sidewalk: "gray",
+        other: "blue",
+        boundary: "black"
+    };
+
+
+    ///////////////////////
+    // styling functions //
+    ///////////////////////
+
+    // returns color property based on feature type
+    function getColor(featureType) {
+        return featureType == "Greenway" ? typeColors.greenway : 
+               featureType == "Side Path" ? typeColors.sidepath :
+               featureType == "Trail" ? typeColors.trail :
+               featureType == "Street-Side Greenway" ? typeColors.ssgreenway :
+               featureType == "Sidewalk (Greenway)" ? typeColors.sidewalk :     
+            typeColors.other ; // other
+    };
+
+    // returns dash type based on feature status
+    function getDashes(featureStatus) { 
+        return featureStatus === "Existing" ? '1' : '1 6'
+    };
+
+    // hides features that do not yet exist
+    function getOpacity(featureYear) { 
+        return featureYear < myCurrentSelectionYear ? '1' : '0'
+    };
+
+    // wrapper to assign styling to each feature with leaflet's anticipated syntax
+    function myStyle(features) {
+        // console.log(features.properties.PLAN_YEAR, features.properties.TYPE, features.properties.TRAIL_NAME, features.properties.INSTALLED) // This the property with the DATE value. 
+        return {
+            "color": getColor(features.properties.TYPE),
+            "weight": 3,
+            "dashArray": getDashes(features.properties.STATUS),
+            "opacity" : getOpacity(features.properties.PLAN_YEAR)
+        }
+    };
+
+    // creates a popup populated with column data for each feature
+    function myPopUp(features, layer) {
+         var date = new Date(features.properties.TC_APPROVE);
+            layer.bindPopup("<b>" + features.properties.TRAIL_NAME + "</b><br>" +
+                "Status: " + features.properties.STATUS + "<br>" +
+                "Path Type: " + features.properties.TYPE + "<br>" +
+                "Corridor: " + features.properties.CORRIDOR + "<br>" +
+                "Year Planned: " + features.properties.PLAN_YEAR + "<br>"
+         )
+    };
+
+
+    ////////////////////////////////////////////
+    // importing feature layers from esri api //
+    ////////////////////////////////////////////
+
+    const refApexPedPaths = "https://services1.arcgis.com/nry3yyvaEfskMEXA/arcgis/rest/services/Apex_Bicycle_and_Pedestrian_System/FeatureServer/2";
+    const refApexParks = "https://services1.arcgis.com/nry3yyvaEfskMEXA/arcgis/rest/services/Parks/FeatureServer/0";
+    const refApexBoundary = "https://services1.arcgis.com/nry3yyvaEfskMEXA/ArcGIS/rest/services/Apex_Future_Planning_Area/FeatureServer/5";
+
+    // Greenway Layer
+    const greenways = L.esri.featureLayer({
+        url: refApexPedPaths,
+        style: myStyle,
+        onEachFeature: myPopUp,
+        where: "TYPE = 'Greenway'"
+    });
+
+    // Side Path Layer
+    const sidepaths = L.esri.featureLayer({
+        url: refApexPedPaths,
+        style: myStyle,
+        onEachFeature: myPopUp,
+        where: "TYPE = 'Side Path'"
+    });
+
+    // Nature Trail Layer
+    const trails = L.esri.featureLayer({
+        url: refApexPedPaths,
+        style: myStyle,
+        onEachFeature: myPopUp,
+        where: "TYPE = 'Trail'"
+    });
+
+    // Street-Side Greenway Layer
+    const ssgreenways = L.esri.featureLayer({
+        url: refApexPedPaths,
+        style: myStyle,
+        onEachFeature: myPopUp,
+        where: "TYPE = 'Street-Side Greenway'"
+    });
+
+    // Sidewalk Layer
+    const sidewalks = L.esri.featureLayer({
+        url: refApexPedPaths,
+        style: myStyle,
+        onEachFeature: myPopUp,
+        where: "TYPE = 'Sidewalk (Greenway)'"
+    });
+
+    // American Tobacco Trail Layer
+    const att = L.esri.featureLayer({
+        url: refApexPedPaths,
+        style: myStyle,
+        onEachFeature: myPopUp,
+        where: "TYPE = 'Greenway-Equestrian'"
+    });
+
+    // Parks Layer
+    const parks = L.esri.featureLayer({
+        url: refApexParks,
+        style: function parkStyle(feature) {
+            return {
+                fillColor: typeColors.greenway,
+                fillOpacity: 0.5,
+                weight: 0
+            }},
+        onEachFeature: function parkPopUp(features, layer) {
+            layer.bindPopup("<b>" + features.properties.NAME + "</b>") 
+        },
+        where: "STATUS = 'Existing'"
+    });
+
+    // Town Boundary Layer
+    const boundary = L.esri.featureLayer({
+        url: refApexBoundary,
+        style: function mystyle(feature) {
+            return {
+                fillOpacity: 0,
+                weight: 1,
+                color: "black"
+            }}
+    });
+    
+
+    ///////////////////
+    // layer control //
+    ///////////////////
+
+    // import streets vector tile layer
+    const streets = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+        subdomains: 'abcd',
+        maxZoom: 18,
+        minZoom: 11
+    });
+    
+    // import satellite raster tile layer
+    const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+	    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+        maxZoom: 18,
+        minZoom: 11
+    });
+
+    layerList = [greenways, sidepaths, trails, ssgreenways, sidewalks, att, parks, boundary];
+
+    // create object to associate layer description with each layer (including color styling from typeColors)
+    const overlayMaps = {
+        [`<span style='color: ${typeColors.greenway}'>  &#9473; Greenways</span>`]: greenways,
+        [`<span style='color: ${typeColors.sidepath}'>  &#9473; Side Paths</span>`] : sidepaths,
+        [`<span style='color: ${typeColors.trail}'>  &#9473; Trails</span>`] : trails,
+        [`<span style='color: ${typeColors.ssgreenway}'>  &#9473; Street-Side Greenways</span>`] : ssgreenways,
+        [`<span style='color: ${typeColors.sidewalk}'>  &#9473; Sidewalks</span>`] : sidewalks,
+        [`<span style='color: ${typeColors.other}'>  &#9473; American Tobacco Trail</span>`] : att,
+        [`<span style='color: ${typeColors.greenway}'>&#9724; Parks</span>`] : parks,
+        [`<span style='color: ${typeColors.boundary}'>&#9723; Future Planning Area</span>`] : boundary
+    };
+
+    // same thing here but for basemaps
+    const baseMaps = {
+        "Streets": streets,
+        "Satellite": satellite
+    };
+
+
+    /////////////////////////
+    // map object creation //
+    /////////////////////////
+
+    // creating map object, add greenways layer and streets basemap by default
+    const map = L.map('map', {
+        center: [35.73230144892665, -78.87270608267929],
+        zoom: 11,
+        layers: [greenways, streets, boundary]
+    });
+    
+    // limit map bounds to Apex and immediate surroundings
+    map.setMaxBounds(map.getBounds());
+
+    // create layer control object from baseMaps and overlayMaps objects, add to map
+    const layerControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
+
+
+    //////////////////////////
+    // slider functionality //
+    //////////////////////////
+
+    // when triggered, resets styling for all layers
+    function resetAll(listOfLayers) {
+        for (let x in listOfLayers) {
+            listOfLayers[x].resetStyle()
+        }
+    };
+
+    // function called by the slider that receives the value from the slider
+    function moveSlider(value) {
+        document.getElementById('daYear').innerHTML = 'Year: ' + value // assign the value of year into the text
+        myCurrentSelectionYear = value // reassign the new selected year value
+        resetAll(layerList)
+    };
+
+    // run the function moveSlider with the year 2025 to start with our first year 
+    moveSlider(myCurrentSelectionYear) 
+
+    // on refresh, reset slider value to 2025
+    window.onload = function() {
+        document.getElementById('yearSlider').value = 2025;  
+    }; 
+
+    //////////////
+    // geocoder //
+    //////////////
+
+    // add geocoder from geocoder library to map
+    new L.Control.Geocoder().addTo(map);
+
+</script>   
+</html>
